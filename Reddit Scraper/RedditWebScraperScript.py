@@ -4,6 +4,9 @@ import time
 import re
 import requests
 from bs4 import BeautifulSoup
+import urllib.robotparser
+from urllib.parse import urlparse
+import logging
 
 reddit = praw.Reddit(
     client_id="bwjZyqy7Lplf_jPY5ds3SA",
@@ -22,6 +25,8 @@ subredditsToCrawl = ["nba", "warriors", "lakers", "bostonceltics", "torontorapto
                      "LukaDoncic", "KobeReps", "lebron"]
 currentSubReddit = 0
 filesize = 0
+embeddedLinks = r'https?:\/\/(?:www\.)?[^\s]+'
+
 
 while(currentSubReddit < len(subredditsToCrawl) or filesize <= 500000000):
     
@@ -36,17 +41,58 @@ while(currentSubReddit < len(subredditsToCrawl) or filesize <= 500000000):
             #print(submission.score) 
             #print(submission.url)
             #print(submission.permalink)
-    
+
+            otherUrlList = []
+            otherUrls = re.findall(embeddedLinks, submission.selftext)
+            otherUrls.append(submission.url)
+            print(otherUrls)
+
+            for i in otherUrls:
+                title = "Not Found"
+                body = "Not Found"
+                url = i
+                can_fetch = False
+            
+                try:
+                    url = i.strip()
+                    parsed_url = urlparse(url)
+                    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                    rp = urllib.robotparser.RobotFileParser()
+                    rp.set_url(f"{base_url}/robots.txt")
+                    rp.read()
+                    can_fetch = rp.can_fetch('*', url)
+            
+                    if can_fetch:
+                        page = requests.get(url)  
+                        page.raise_for_status()  
+                        soup = BeautifulSoup(page.content, "html.parser")
+                        if soup.title:
+                            title = soup.title.string.strip()
+                        if soup.get_text():
+                            body = soup.get_text(strip=True)
+                        print("Title:", title, "Body:", body)
+            
+                except Exception as e:
+                    logging.error(f"Error processing {url}: {e}")
+
+                otherUrlDict = {
+                    "title": title,
+                    "body": body,
+                    "url": url
+                }
+                otherUrlList.append(otherUrlDict)
+                
             JSONdict = {
-                "selftext": submission.selftext,
                 "title": submission.title,
+                "self_text": submission.selftext,
                 "id": submission.id,
                 "created_utc": submission.created_utc,
                 "score": submission.score,
                 "num_comments": submission.num_comments,
                 "upvote_ratio": submission.upvote_ratio,
                 "url": submission.url,
-                "permalink": submission.permalink
+                "perma_link": submission.permalink,
+                "Embedded_Links": otherUrlList
             }
     
             seenPosts.append(submission.id)
@@ -54,8 +100,6 @@ while(currentSubReddit < len(subredditsToCrawl) or filesize <= 500000000):
             postString = json.dumps(JSONdict)
             output_file.write(postString + '\n')
             filesize = output_file.tell()
-
-            print(filesize)
             
         if(filesize >= 500000000):
             break
