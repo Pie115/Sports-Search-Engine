@@ -1,82 +1,79 @@
-import json
 import praw
-import time
+import json
+import logging
 import re
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from bs4 import BeautifulSoup
 import urllib.robotparser
 from urllib.parse import urlparse
-import logging
 
-reddit = praw.Reddit(
-    client_id="bwjZyqy7Lplf_jPY5ds3SA",
-    client_secret="oMFXunnTXVkqlIMdihJwLVB0HaALsg",
-    user_agent="IllSleep4413",
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+session = requests.Session()
+retries = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+session.mount('http://', HTTPAdapter(max_retries=retries))
+session.mount('https://', HTTPAdapter(max_retries=retries))
+
+reddit = praw.Reddit(client_id="bwjZyqy7Lplf_jPY5ds3SA",
+                     client_secret="oMFXunnTXVkqlIMdihJwLVB0HaALsg",
+                     user_agent="IllSleep4413")
 
 seenPosts = []
-subredditsToCrawl = ["nba", "warriors", "lakers", "bostonceltics", "torontoraptors", "sixers", "chicagobulls", "rockets", 
-                     "NYKnicks", "clevelandcavs", "Thunder", "MkeBucks", "mavericks", "NBASpurs", "timberwolves",
-                     "washingtonwizards", "UtahJazz", "ripcity", "suns", "kings", "heat", "denvernuggets", "AtlantaHawks", 
-                     "GoNets", "OrlandoMagic", "DetroitPistons", "LAClippers", "pacers", "CharlotteHornets", "NOLAPelicans",
-                     "memphisgrizzlies", "NBA_Draft", "VintageNBA", "Nbamemes", "nbadiscussion", "NBA_Bets", "NBA2K", 
-                     "NBATalk", "nbabetting", "NBAlive", "nbastreambot", "dfsports", "nbaNews", "Basketball", 
-                     "NBA_Highlights", "WholesomeNBA", "sports", "nbacirclejerk", "basketballcards", "CollegeBasketball", 
-                     "LukaDoncic", "KobeReps", "lebron"]
+subredditsToCrawl1 = ["memphisgrizzlies"] #started at suns
+
+subredditsToCrawl2 = [
+                      "miamidolphins",
+                     "Patriots", "nyjets", "DenverBroncos", "KansasCityChiefs", "raiders", 
+                     "Chargers"
+                     ] #started at Basketball sports?
+
+subredditsToCrawl3 = ["CHIBears", "detroitlions", "GreenBayPackers", "minnesotavikings"
+                     "falcons", "panthers", "Saints", "buccaneers"] #started at bears
 currentSubReddit = 0
 filesize = 0
 embeddedLinks = r'https?:\/\/(?:www\.)?[^\s]+'
 
 
-def scrapePostLoop(submision):
-    if(submission.id not in seenPosts):
-        #print(submission.selftext)
-        #print(submission.title)
-        #print(submission.id) 
-        #print(submission.score) 
-        #print(submission.url)
-        #print(submission.permalink)
-
-        otherUrlList = []
-        otherUrls = re.findall(embeddedLinks, submission.selftext)
-        otherUrls.append(submission.url)
+def scrapePostLoop(submission):
+    if submission.id not in seenPosts:
+        otherUrls = re.findall(embeddedLinks, submission.selftext) + [submission.url]
         print(otherUrls)
 
+        otherUrlList = []
         for i in otherUrls:
             title = "Not Found"
             body = "Not Found"
-            url = i
-            can_fetch = False
-        
-            try:
-                url = i.strip()
-                parsed_url = urlparse(url)
-                base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-                rp = urllib.robotparser.RobotFileParser()
-                rp.set_url(f"{base_url}/robots.txt")
-                rp.read()
-                can_fetch = rp.can_fetch('*', url)
-        
-                if can_fetch:
-                    page = requests.get(url)  
-                    page.raise_for_status()  
-                    soup = BeautifulSoup(page.content, "html.parser")
-                    if soup.title:
-                        title = soup.title.string.strip()
-                    if soup.get_text():
-                        body = soup.get_text(strip=True)
-                    print("Title:", title, "Body:", body)
-        
-            except Exception as e:
-                logging.error(f"Error processing {url}: {e}")
+            url = i.strip()
 
-            otherUrlDict = {
-                "title": title,
-                "body": body,
-                "url": url
-            }
-            otherUrlList.append(otherUrlDict)
+        try:
+            page = session.get(url, timeout=2)
+            if not url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+                try:
+                    parsed_url = urlparse(url)
+                    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                    rp = urllib.robotparser.RobotFileParser()
+                    rp.set_url(f"{base_url}/robots.txt")
+                    rp.read()
+                    can_fetch = rp.can_fetch('*', url)
             
+                    if can_fetch:
+                        page = session.get(url, timeout=3)
+                        page.raise_for_status()
+                        soup = BeautifulSoup(page.content, "html.parser")
+                        title = soup.title.string.strip() if soup.title else title
+                        body = soup.get_text(strip=True)
+                        print("Title:", title, "Body:", body)
+            
+                except requests.exceptions.RequestException as e:
+                    logging.error(f"Error processing {url}: {e}")
+                
+            otherUrlDict = {"title": title, "body": body, "url": url}
+            otherUrlList.append(otherUrlDict)
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error processing {url}: {e}")
+
         JSONdict = {
             "title": submission.title,
             "self_text": submission.selftext,
@@ -91,25 +88,30 @@ def scrapePostLoop(submision):
         }
 
         seenPosts.append(submission.id)
-        output_file = open("myredditdata.json", "a")
-        postString = json.dumps(JSONdict)
-        output_file.write(postString + '\n')
-        filesize = output_file.tell()
-        
+        with open("myredditdata3.json", "a") as output_file:
+            json.dump(JSONdict, output_file)
+            output_file.write('\n')
+            output_file.flush()    
 
-while(currentSubReddit < len(subredditsToCrawl) or filesize <= 500000000):
+with open('myredditdata3.json', 'r') as file:
+    for line in file:
+        data = json.loads(line)
+        if 'id' in data:
+            seenPosts.append(data['id'])
+
+while(currentSubReddit < len(subredditsToCrawl3) or filesize <= 500000000):
     
-    print(subredditsToCrawl[currentSubReddit], len(seenPosts))
+    print(subredditsToCrawl3[currentSubReddit], len(seenPosts))
     
-    for submission in reddit.subreddit(subredditsToCrawl[currentSubReddit]).new(limit=None):
+    for submission in reddit.subreddit(subredditsToCrawl3[currentSubReddit]).new(limit=None):
         scrapePostLoop(submission)
         if(filesize >= 500000000):
             break
-    for submission in reddit.subreddit(subredditsToCrawl[currentSubReddit]).top(limit=None):
+    for submission in reddit.subreddit(subredditsToCrawl3[currentSubReddit]).top(limit=None):
         scrapePostLoop(submission)
         if(filesize >= 500000000):
             break
-    for submission in reddit.subreddit(subredditsToCrawl[currentSubReddit]).hot(limit=None):
+    for submission in reddit.subreddit(subredditsToCrawl3[currentSubReddit]).hot(limit=None):
         scrapePostLoop(submission)
         if(filesize >= 500000000):
             break
